@@ -597,7 +597,7 @@ async def process_forks_database_creation(keys: list[str], proxies: list[str]):
             else:
                 proxy_url = proxy
 
-            proxy = Proxy(proxy_url=proxy_url, change_link=change_link)
+            proxy = Proxy(proxy_url=f'http://{proxy_url}', change_link=change_link)
 
         backpack = BackpackAccount(
             proxy=proxy,
