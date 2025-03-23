@@ -590,7 +590,6 @@ async def process_forks_database_creation(keys: list[str], proxies: list[str]):
 
         change_link = ''
 
-        proxy = None
         if proxy:
             if MOBILE_PROXY:
                 proxy_url, change_link = proxy.split('|')
