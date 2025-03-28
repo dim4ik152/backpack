@@ -683,7 +683,7 @@ async def process_fork(task: Forks, proxies: list[str]) -> bool:
             else:
                 proxy_url = proxy
 
-            proxy = Proxy(proxy_url=proxy_url, change_link=change_link)
+            proxy = Proxy(proxy_url=f'http://{proxy_url}', change_link=change_link)
 
         try:
             backpack = BackpackAccount(
