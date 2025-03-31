@@ -166,36 +166,93 @@ async def process_random_swaps(route: Route) -> Optional[bool]:
         api_key=route.wallet.private_key
     )
 
-    num_swaps = random.randint(
-        RandomSpotSwapsSettings.num_of_swaps[0],
-        RandomSpotSwapsSettings.num_of_swaps[1]
-    )
-
-    logger.info(f"Starting {num_swaps} random token purchases")
-
-    successful_swaps = 0
+    logger.info("Starting random token swaps until USDC is depleted")
+    
     time_in_force: Literal['IOC', 'FOK', 'GTC'] = 'GTC'
+    successful_swaps = 0
 
     try:
-        for i in range(num_swaps):
+        while True:
             try:
                 usdc_balance = await backpack.get_balances("USDC")
-                if usdc_balance <= 0.2:
-                    logger.warning("Insufficient USDC balance for further purchases")
-                    break
+                if usdc_balance <= 40.2:
+                    logger.warning("USDC balance too low, swapping all assets back to USDC")
+                    all_balances = await backpack.get_balances()
+                    
+                    for token, balance_info in all_balances.items():
+                        if token in ["USDC"]:
+                            continue
+
+                        token_balance = float(balance_info['available'])
+                        if token_balance <= 0:
+                            continue
+
+                        trading_pair = f"{token}_USDC"
+
+                        try:
+                            token_price = await backpack.get_token_price(trading_pair)
+                            token_decimals = await backpack.get_token_decimals(trading_pair) or 6
+                            usdc_value = token_balance * float(token_price)
+
+                            logger.info(
+                                f"Balance {token}: {token_balance}, Value in USDC: ~{usdc_value:.4f}, Precision: {token_decimals}")
+
+                            precise_balance = Decimal(str(token_balance)).quantize(
+                                Decimal('0.' + '0' * token_decimals),
+                                rounding=ROUND_DOWN
+                            )
+
+                            amount_to_swap = float(precise_balance)
+
+                            if amount_to_swap <= 0:
+                                logger.warning(
+                                    f"After rounding to {token_decimals} decimals, {token} balance became zero, skipping")
+                                continue
+
+                            logger.info(
+                                f"Attempting to convert {amount_to_swap} {token} (rounded according to precision {token_decimals})")
+
+                            try:
+                                result = await backpack.post_limit_sell_order(
+                                    symbol=trading_pair,
+                                    amount_token=amount_to_swap,
+                                    time_in_force=time_in_force
+                                )
+
+                                if 'status' in result and result['status'] == 'New':
+                                    logger.info(f"Order for {token} placed, waiting for execution...")
+                                    
+                                    # Ожидаем исполнения ордера
+                                    for _ in range(10):  # 10 попыток с интервалом 10 сек
+                                        order_status = await backpack.get_order_status(result['order_id'])
+                                        if order_status == 'Filled':
+                                            logger.success(f"Order for {token} executed successfully!")
+                                            break
+                                        await sleep(10)
+                                    else:
+                                        logger.warning(f"Order for {token} not filled in time, canceling...")
+                                        await backpack.cancel_order(result['order_id'])
+                                elif 'status' in result and result['status'] == 'Filled':
+                                    logger.success(f"Order for {token} successfully executed!")
+                                else:
+                                    logger.warning(f"Unexpected response when placing order for {token}: {result}")
+                            except Exception as ex:
+                                logger.warning(f"Failed to place order for {token}: {ex}")
+                        except Exception as ex:
+                            logger.error(f"Error processing {token}: {ex}")
+
+                        await sleep(random.randint(15, 20))  # Пауза перед следующим ордером
+
+                    continue  # После свопа всего в USDC начинается новый цикл
 
                 symbol = random.choice(RandomSpotSwapsSettings.symbols) + '_USDC'
-
                 percentage = random.uniform(
                     RandomSpotSwapsSettings.swap_percentage[0],
                     RandomSpotSwapsSettings.swap_percentage[1]
                 )
-
                 amount_usdc = usdc_balance * percentage
 
-                logger.info(
-                    f"Purchase {i + 1}/{num_swaps}: {symbol} for {amount_usdc:.4f}"
-                    f" USDC ({percentage * 100:.2f}% of current USDC balance)")
+                logger.info(f"Swapping {amount_usdc:.4f} USDC for {symbol} ({percentage * 100:.2f}%)")
 
                 try:
                     result = await backpack.post_limit_order(
@@ -205,23 +262,22 @@ async def process_random_swaps(route: Route) -> Optional[bool]:
                         time_in_force=time_in_force
                     )
 
-                    if 'status' in result and (result['status'] == 'Filled' or result['status'] == 'New'):
-                        logger.success(f"Buy order for {symbol} successfully placed: {result['status']}")
+                    if 'status' in result and result['status'] in ['Filled', 'New']:
+                        logger.success(f"Successfully placed order for {symbol}: {result['status']}")
                         successful_swaps += 1
                     else:
-                        logger.warning(f"Unexpected response when placing buy order: {result}")
+                        logger.warning(f"Unexpected response: {result}")
                 except Exception as ex:
-                    logger.error(f"Failed to place buy order for {symbol}: {ex}")
+                    logger.error(f"Order failed for {symbol}: {ex}")
+
+                await sleep(15)  # Пауза 15 секунд после каждой сделки
 
             except Exception as ex:
-                logger.error(f"Error during purchase {i + 1}: {ex}")
+                logger.error(f"Error during swap: {ex}")
 
             time_to_sleep = random.randint(PAUSE_BETWEEN_MODULES[0], PAUSE_BETWEEN_MODULES[1])
-            logger.info(f'Sleeping {time_to_sleep} seconds...')
+            logger.info(f"Sleeping {time_to_sleep} seconds before next swap...")
             await sleep(time_to_sleep)
-
-        logger.info(f"Completed {successful_swaps} successful purchases out of {num_swaps} attempts")
-        return successful_swaps > 0
 
     except Exception as ex:
         logger.error(f"Error in process_random_swaps: {ex}")
